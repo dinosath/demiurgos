@@ -38,57 +38,43 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
-    let dir = dirs::data_local_dir().unwrap().join("demiurgos");
-    println!("directory for installing templates: {:?}!", dir);
-    match &cli.command {
-        Commands::Install { url } => {
-            println!("dir to install templates: {:?}!", url);
-            let source = url;
-            let binding = dirs::config_local_dir().unwrap().join("demiurgos");
-            let destination = binding.to_str().unwrap();
-            if source.starts_with("http://") || source.starts_with("https://") {
-                download_from_url(source, destination).await;
-            } else if source.starts_with("https://github.com") && !source.ends_with(".git") {
-                download_github_directory(source, destination).await;
-            } else if source.ends_with(".git") {
-                clone_git_repo(source, destination);
-            } else {
-                copy_from_path(source, destination);
-            }
-        },
-        Commands::New { name } => {
-            println!("Creating new template: {name}");
-        }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let cli_args = CliArgs::parse();
-    let source = &cli_args.install;
-    let binding = dirs::data_local_dir().unwrap().join("demiurgos");
-    let destination = binding.to_str().unwrap();
+    let cli = Cli::parse();
+    let dir = dirs::data_local_dir().unwrap().join("demiurgos");
+    info!("directory for installing templates: {:?}!", dir);
+    match &cli.command {
+        Commands::Install { url } => {
+            info!("dir to install templates: {:?}!", url);
+            let source = url;
+            let binding = dirs::data_local_dir().unwrap().join("demiurgos");
+            let destination = binding.to_str().unwrap();
 
-    info!("Starting the install process...");
-    debug!("Source: {}, Destination: {}", source, destination);
+            info!("Starting the install process...");
+            debug!("Source: {}, Destination: {}", source, destination);
 
-
-    if source.starts_with("https://github.com") && source.contains("/tree/") {
-        info!("Detected GitHub directory URL that is not a repo, downloading specific directory...");
-        download_github_directory(source, destination).await;
-    } else if source.starts_with("http://") || source.starts_with("https://") {
-        info!("Detected URL, downloading file...");
-        download_from_url(source, destination).await;
-    } else if source.ends_with(".git") {
-        info!("Detected Git repository URL, cloning repository...");
-        clone_git_repo(source, destination);
-    } else {
-        info!("Detected local file or directory path, copying...");
-        copy_from_path(source, destination);
+            if source.starts_with("https://github.com") && source.contains("/tree/") {
+                info!("Detected GitHub directory URL that is not a repo, downloading specific directory...");
+                download_github_directory(source, destination).await;
+            } else if source.starts_with("http://") || source.starts_with("https://") {
+                info!("Detected URL, downloading file...");
+                download_from_url(source, destination).await;
+            } else if source.ends_with(".git") {
+                info!("Detected Git repository URL, cloning repository...");
+                clone_git_repo(source, destination);
+            } else {
+                info!("Detected local file or directory path, copying...");
+                copy_from_path(source, destination);
+            }
+            info!("Installation process completed.");
+        },
+        Commands::New { name } => {
+            info!("Creating new template: {name}");
+        }
     }
-    info!("Installation process completed.");
 }
-
 
 fn copy_from_path(source: &str, destination: &str) {
     let source_path = Path::new(source);
@@ -127,8 +113,6 @@ fn get_existing_versions(repo_path: &Path) -> Vec<Version> {
     }
     versions
 }
-
-
 
 async fn download_from_url(source: &str, destination: &str) {
     let url = Url::parse(source).expect("Invalid URL");
