@@ -12,3 +12,7 @@ tokio = { version = "1", features = ["full"] }
 gix = "0.64.0"
 dirs = "5.0"
 zip = "0.6"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+uuid = {version = "1.10.0",features = ["v4", "fast-rng", ] }
+semver = "1.0"

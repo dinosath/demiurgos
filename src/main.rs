@@ -6,6 +6,11 @@ use std::path::Path;
 use clap::Parser;
 use gix::Repository;
 use reqwest::Url;
+use semver::Version;
+use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::format;
+use uuid::Uuid;
 use zip::ZipArchive;
 
 /// A fictional versioning CLI
@@ -14,25 +19,43 @@ use zip::ZipArchive;
 struct CliArgs {
     #[arg(short, long)]
     install: String,
+
+    #[arg(short, long)]
+    name: String,
+
+    #[arg(short, long)]
+    version: String
 }
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let cli_args = CliArgs::parse();
     let source = &cli_args.install;
-    let binding = dirs::config_local_dir().unwrap().join("demiurgos");
+    let binding = dirs::data_local_dir().unwrap().join("demiurgos");
     let destination = binding.to_str().unwrap();
 
-    if source.starts_with("http://") || source.starts_with("https://") {
-        download_from_url(source, destination).await;
-    }else if source.starts_with("https://github.com") && !source.ends_with(".git") {
+    info!("Starting the install process...");
+    debug!("Source: {}, Destination: {}", source, destination);
+
+
+    if source.starts_with("https://github.com") && source.contains("/tree/") {
+        info!("Detected GitHub directory URL that is not a repo, downloading specific directory...");
         download_github_directory(source, destination).await;
-    }
-    else if source.ends_with(".git") {
+    } else if source.starts_with("http://") || source.starts_with("https://") {
+        info!("Detected URL, downloading file...");
+        download_from_url(source, destination).await;
+    } else if source.ends_with(".git") {
+        info!("Detected Git repository URL, cloning repository...");
         clone_git_repo(source, destination);
     } else {
+        info!("Detected local file or directory path, copying...");
         copy_from_path(source, destination);
     }
+    info!("Installation process completed.");
 }
 
 fn copy_from_path(source: &str, destination: &str) {
@@ -40,8 +63,10 @@ fn copy_from_path(source: &str, destination: &str) {
     let destination_path = Path::new(destination);
 
     if source_path.is_file() {
+        debug!("Copying file from {} to {}", source, destination);
         fs::copy(source_path, destination_path).expect("Failed to copy file");
     } else if source_path.is_dir() {
+        debug!("Copying directory from {} to {}", source, destination);
         fs::create_dir_all(destination_path).expect("Failed to create destination directory");
         for entry in fs::read_dir(source_path).expect("Failed to read source directory") {
             let entry = entry.expect("Failed to get directory entry");
@@ -50,9 +75,27 @@ fn copy_from_path(source: &str, destination: &str) {
             copy_from_path(entry_path.to_str().unwrap(), entry_destination.to_str().unwrap());
         }
     } else {
-        eprintln!("Source path does not exist");
+        info!("Source path does not exist");
     }
 }
+
+fn get_existing_versions(repo_path: &Path) -> Vec<Version> {
+    let mut versions = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(repo_path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                if let Ok(file_name) = entry.file_name().into_string() {
+                    if let Ok(version) = Version::parse(&file_name) {
+                        versions.push(version);
+                    }
+                }
+            }
+        }
+    }
+    versions
+}
+
 
 async fn download_from_url(source: &str, destination: &str) {
     let url = Url::parse(source).expect("Invalid URL");
@@ -64,18 +107,20 @@ async fn download_from_url(source: &str, destination: &str) {
 
 async fn download_github_directory(source: &str, destination: &str) {
     let (repo_url, path_in_repo) = extract_github_info(source);
-    let temp_dir = std::env::temp_dir().join("repo_temp");
+    let path= format!("repo_temp-{}",Uuid::new_v4());
+    let temp_dir = std::env::temp_dir().join(path);
     let temp_zip_path = temp_dir.join("repo.zip");
 
     fs::create_dir_all(&temp_dir).expect("Failed to create temp directory");
 
     let archive_url = format!("{}/archive/refs/heads/master.zip", repo_url);
+    debug!("Downloading GitHub archive from {}", archive_url);
     let response = reqwest::get(&archive_url).await.expect("Failed to download archive");
     let mut file = File::create(&temp_zip_path).expect("Failed to create temp zip file");
     let content = response.bytes().await.expect("Failed to read content");
-    copy(&mut content.as_ref(), &mut file).expect("Failed to write to temp zip file");
 
-    // Extract the zip file
+    debug!("Extracting from zip archive {:?}", temp_zip_path);
+    copy(&mut content.as_ref(), &mut file).expect("Failed to write to temp zip file");
     let mut zip_file = File::open(&temp_zip_path).expect("Failed to open temp zip file");
     let mut archive = ZipArchive::new(zip_file).expect("Failed to read zip archive");
 
@@ -100,9 +145,10 @@ async fn download_github_directory(source: &str, destination: &str) {
     let specific_dir = temp_dir.join(format!("{}-master", repo_url.split('/').last().unwrap())).join(path_in_repo);
 
     if specific_dir.exists() && specific_dir.is_dir() {
+        debug!("Copying extracted directory to destination");
         copy_from_path(specific_dir.to_str().unwrap(), destination);
     } else {
-        eprintln!("The specified directory does not exist in the repository");
+        error!("The specified directory does not exist in the repository");
     }
 
     // Clean up
