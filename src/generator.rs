@@ -4,14 +4,17 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use flate2::bufread::GzDecoder;
 use git2::Repository;
-use log::error;
 use reqwest::{get, Client};
+use rrgen::RRgen;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tar::Archive;
 use tempfile::tempdir;
 use tokio::fs::{copy, create_dir_all, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info};
+use tracing::field::debug;
+use walkdir::WalkDir;
 use zip::ZipArchive;
 
 #[derive(Serialize, Deserialize)]
@@ -202,9 +205,9 @@ fn copy_local_path(src: &str, dest: &Path) -> Result<(), Box<dyn std::error::Err
 
 /// Moves the generator folder to the repository root after validation.
 async fn move_to_repo_root(temp_dir: PathBuf, repo_root: &PathBuf) -> Result<(), io::Error> {
-    let path = temp_dir.join("Generator.yaml");
+    let path = temp_dir.clone().join("Generator.yaml");
     debug!("Path: {}", path.display());
-    let mut file = File::open(path).await.unwrap();
+    let mut file = File::open(path.clone()).await.unwrap();
 
     // Read the file contents asynchronously into a String
     let mut contents = String::new();
@@ -216,22 +219,44 @@ async fn move_to_repo_root(temp_dir: PathBuf, repo_root: &PathBuf) -> Result<(),
 
     let generator_dir = Path::new(repo_root).join(generator.name.clone()).join(generator.version.clone());
 
-    info!("Installing generator {}:{} to directory {}",generator.name.clone(),generator.version.clone(),generator_dir.display());
+    info!("Installing generator with name:{}, version:{} to directory {}",generator.name.clone(),generator.version.clone(),generator_dir.display());
     if !generator_dir.exists() {
         create_dir_all(&generator_dir);
     }
 
-    // Copy the contents from the temp dir to the repo directory
-    for entry in fs::read_dir(temp_dir)? {
-        let entry = entry?;
-        let dest_path = generator_dir.join(entry.file_name());
-        if entry.path().is_dir() {
-            create_dir_all(&dest_path);
-            copy_local_path(entry.path().to_str().unwrap(), &dest_path);
-        } else {
-            copy(entry.path(), dest_path);
+    for file in WalkDir::new(temp_dir.clone()).into_iter().filter_map(|file| file.ok()) {
+        if file.file_type().is_file() {
+            let source = file.clone().into_path();
+            let stripped_path = file.path().strip_prefix(temp_dir.clone());
+            let destination = generator_dir.clone().join(stripped_path.unwrap());
+            fs::create_dir_all(destination.parent().unwrap())?;
+            debug!("Copying file {} to {}", source.display(),destination.display());
+            copy(source, destination).await.unwrap();
         }
     }
+    Ok(())
+}
 
+pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config: &Path, output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config_file = File::open(config).await.unwrap();
+    let mut contents = String::new();
+    config_file.read_to_string(&mut contents).await.unwrap();
+    let json_value: Value = serde_json::from_str(&contents)?;
+
+    for file in WalkDir::new(generator_dir_path.clone()).into_iter().filter_map(|file| file.ok()) {
+        if file.file_type().is_file() {
+            let source = file.clone().into_path();
+            let stripped_path = file.path().strip_prefix(generator_dir_path.clone());
+            let destination = output.clone().join(stripped_path.unwrap());
+            fs::create_dir_all(destination.parent().unwrap())?;
+            debug!("copying file {} to {}", source.display(),destination.display());
+            if file.file_name().to_str().unwrap().ends_with(".t") {
+                rrgen.generate(file.into_path().to_str().unwrap(), &json_value)?;
+            }
+            else {
+                copy(source, destination).await.unwrap();
+            }
+        }
+    }
     Ok(())
 }

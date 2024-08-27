@@ -4,11 +4,12 @@ use generator::install_template;
 use std::fs;
 use std::fs::File;
 use std::io::copy;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use clap_derive::Subcommand;
 use reqwest::Url;
+use rrgen::RRgen;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncBufReadExt;
@@ -17,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format;
 use uuid::Uuid;
 use zip::ZipArchive;
+use crate::generator::{generate, Generator};
 
 /// A fictional versioning CLI
 #[derive(Parser, Debug)]
@@ -53,14 +55,28 @@ enum Commands {
         /// the name of the new template
         name: String,
     },
+    /// use generator to create output
     Generate {
+        /// path to config file
+        #[arg(short='c',long)]
         config: String,
-        uri: String,
+        #[arg(short='o',long)]
+        output: PathBuf,
+        /// the name of the generator
+        #[arg(short, long, conflicts_with = "uri")]
+        name: Option<String>,
+        /// the name of the generator
+        #[arg(short, long, conflicts_with = "uri")]
+        version: Option<String>,
+        /// uri to download and use generator
+        #[arg(short='u', long, conflicts_with = "name", conflicts_with = "version")]
+        uri: Option<String>,
     }
 }
 
 #[tokio::main]
 async fn main() {
+    let rrgen = RRgen::default();
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -80,8 +96,20 @@ async fn main() {
             info!("Creating new template: {name}");
             create_new_template(name);
         },
-        Commands::Generate { config, uri } => {
-            todo!()
+        Commands::Generate { name,version,uri,config ,output} => {
+            if name.is_some() && version.is_some() {
+                let generator_name = name.clone().unwrap();
+                let generator_version = version.clone().unwrap();
+                debug!("Searching for generator: {} with version: {}, config:{}", generator_name, generator_version,config);
+                let generator_path = local_repo.join("generators").join(generator_name).join(generator_version);
+                generate(rrgen, generator_path, Path::new(config), output).await.unwrap();
+            } else if uri.is_some() {
+                let uri = uri.clone().unwrap();
+                debug!("Installing template from URI: {}", uri);
+                install_template(&uri, &local_repo_generators).await;
+            } else {
+                error!("Error: Either generator name and version or a URI must be provided.");
+            }
         },
 
     }
