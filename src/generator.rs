@@ -243,17 +243,20 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config: &Path, o
     config_file.read_to_string(&mut contents).await.unwrap();
     let json_value: Value = serde_json::from_str(&contents)?;
 
-    for file in WalkDir::new(generator_dir_path.clone()).into_iter().filter_map(|file| file.ok()) {
+    let  templates_path = generator_dir_path.join("templates");
+    for file in WalkDir::new(templates_path.clone()).into_iter().filter_map(|file| file.ok()) {
         if file.file_type().is_file() {
             let source = file.clone().into_path();
-            let stripped_path = file.path().strip_prefix(generator_dir_path.clone());
+            let stripped_path = file.path().strip_prefix(templates_path.clone());
             let destination = output.clone().join(stripped_path.unwrap());
             fs::create_dir_all(destination.parent().unwrap())?;
-            debug!("copying file {} to {}", source.display(),destination.display());
             if file.file_name().to_str().unwrap().ends_with(".t") {
-                rrgen.generate(file.into_path().to_str().unwrap(), &json_value)?;
+                debug!("generating with template {} to {}, config:{}", source.display(),destination.display(),json_value.clone());
+                let source_content: String = fs::read_to_string(source.clone())?;
+                rrgen.generate(&*source_content, &json_value)?;
             }
             else {
+                debug!("copying file {} to {}", source.display(),destination.display());
                 copy(source, destination).await.unwrap();
             }
         }
