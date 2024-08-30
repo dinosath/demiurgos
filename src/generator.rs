@@ -14,6 +14,7 @@ use tokio::fs::{copy, create_dir_all, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info};
 use tracing::field::debug;
+use tracing_subscriber::Layer;
 use walkdir::WalkDir;
 use zip::ZipArchive;
 
@@ -237,11 +238,14 @@ async fn move_to_repo_root(temp_dir: PathBuf, repo_root: &PathBuf) -> Result<(),
     Ok(())
 }
 
-pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config: &Path, output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let mut config_file = File::open(config).await.unwrap();
+pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Path, output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config_file = File::open(config_path).await.unwrap();
     let mut contents = String::new();
     config_file.read_to_string(&mut contents).await.unwrap();
-    let json_value: Value = serde_json::from_str(&contents)?;
+    let mut config: Value = serde_json::from_str(&contents)?;
+    debug!("config:{config}");
+    dereference_config(&mut config);
+    debug!("dereferenced config:{config}");
 
     let  templates_path = generator_dir_path.join("templates");
     for file in WalkDir::new(templates_path.clone()).into_iter().filter_map(|file| file.ok()) {
@@ -251,9 +255,9 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config: &Path, o
             let destination = output.clone().join(stripped_path.unwrap());
             fs::create_dir_all(destination.parent().unwrap())?;
             if file.file_name().to_str().unwrap().ends_with(".t") {
-                debug!("generating with template {} to {}, config:{}", source.display(),destination.display(),json_value.clone());
+                debug!("generating with template {} to {}, config:{}", source.display(),destination.display(),config);
                 let source_content: String = fs::read_to_string(source.clone())?;
-                rrgen.generate(&*source_content, &json_value)?;
+                rrgen.generate(&*source_content, &config).unwrap();
             }
             else {
                 debug!("copying file {} to {}", source.display(),destination.display());
@@ -262,4 +266,17 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config: &Path, o
         }
     }
     Ok(())
+}
+
+fn dereference_config(config: &mut Value) {
+    debug!("dereferencing config:{config}");
+    let entities = config.get_mut("entities").unwrap().as_array_mut().unwrap();
+    entities.iter_mut().for_each(|mut elem| {
+        let object = elem.as_object_mut().unwrap();
+        if (object.contains_key("$ref") && object.get("$ref").unwrap().is_string() && object.len()==1) {
+            let reference = object.get("$ref").unwrap().as_str().unwrap();
+            debug!("loading file from reference:{reference}");
+            *elem = serde_json::from_reader(fs::File::open(reference).unwrap()).unwrap();
+        }
+    });
 }
