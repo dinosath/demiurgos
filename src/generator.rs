@@ -7,7 +7,7 @@ use git2::Repository;
 use reqwest::{get, Client};
 use rrgen::RRgen;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tar::Archive;
 use tempfile::tempdir;
 use tokio::fs::{copy, create_dir_all, File};
@@ -243,6 +243,9 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Pa
     let mut contents = String::new();
     config_file.read_to_string(&mut contents).await.unwrap();
     let mut config: Value = serde_json::from_str(&contents)?;
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("rootFolder".to_string(), json!(output.to_str()));
+    }
     debug!("config:{config}");
     dereference_config(&mut config);
     debug!("dereferenced config:{config}");
@@ -255,7 +258,8 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Pa
             let destination = output.clone().join(stripped_path.unwrap());
             fs::create_dir_all(destination.parent().unwrap())?;
             if file.file_name().to_str().unwrap().ends_with(".t") {
-                debug!("generating with template {} to {}, config:{}", source.display(),destination.display(),config);
+                debug!("generating with template {} to {}", source.display(),destination.display());
+                // debug!("config:{}",config);
                 let source_content: String = fs::read_to_string(source.clone())?;
                 rrgen.generate(&*source_content, &config).unwrap();
             }

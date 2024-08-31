@@ -60,8 +60,13 @@ enum Commands {
         /// path to config file
         #[arg(short='c',long)]
         config: String,
+
+        //path to generator
+        #[arg(short='p',long)]
+        generator_path: Option<PathBuf>,
+
         #[arg(short='o',long)]
-        output: PathBuf,
+        output_directory: Option<PathBuf>,
         /// the name of the generator
         #[arg(short, long, conflicts_with = "uri")]
         name: Option<String>,
@@ -96,14 +101,23 @@ async fn main() {
             info!("Creating new template: {name}");
             create_new_template(name);
         },
-        Commands::Generate { name,version,uri,config ,output} => {
+        Commands::Generate { name,version,uri,config , output_directory, generator_path} => {
+            let output = match &output_directory {
+                Some(out) => out,
+                None => &Path::new(".").to_path_buf(),
+            };
             if name.is_some() && version.is_some() {
                 let generator_name = name.clone().unwrap();
                 let generator_version = version.clone().unwrap();
                 debug!("Searching for generator: {} with version: {}, config:{}", generator_name, generator_version,config);
                 let generator_path = local_repo.join("generators").join(generator_name).join(generator_version);
                 generate(rrgen, generator_path, Path::new(config), output).await.unwrap();
-            } else if uri.is_some() {
+            }
+            else if let Some(path) = generator_path {
+                debug!("Searching for generator in path: {} ", path.display());
+                generate(rrgen, path.to_path_buf(), Path::new(config), output).await.unwrap();
+            }
+            else if uri.is_some() {
                 let uri = uri.clone().unwrap();
                 debug!("Installing template from URI: {}", uri);
                 install_template(&uri, &local_repo_generators).await;
