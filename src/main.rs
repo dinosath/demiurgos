@@ -102,20 +102,21 @@ async fn main() {
             create_new_template(name);
         },
         Commands::Generate { name,version,uri,config , output_directory, generator_path} => {
-            let output = match &output_directory {
+            let output = match output_directory {
                 Some(out) => out,
-                None => &Path::new(".").to_path_buf(),
+                None => &Path::new(".").to_path_buf().to_owned(),
             };
+            let output_absolute = output.canonicalize().unwrap();
             if name.is_some() && version.is_some() {
                 let generator_name = name.clone().unwrap();
                 let generator_version = version.clone().unwrap();
                 debug!("Searching for generator: {} with version: {}, config:{}", generator_name, generator_version,config);
                 let generator_path = local_repo.join("generators").join(generator_name).join(generator_version);
-                generate(rrgen, generator_path, Path::new(config), output).await.unwrap();
+                generate(rrgen, generator_path, Path::new(config), &output_absolute).await.unwrap();
             }
             else if let Some(path) = generator_path {
                 debug!("Searching for generator in path: {} ", path.display());
-                generate(rrgen, path.to_path_buf(), Path::new(config), output).await.unwrap();
+                generate(rrgen, path.canonicalize().unwrap(), Path::new(config), &output_absolute).await.unwrap();
             }
             else if uri.is_some() {
                 let uri = uri.clone().unwrap();

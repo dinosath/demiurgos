@@ -238,7 +238,8 @@ async fn move_to_repo_root(temp_dir: PathBuf, repo_root: &PathBuf) -> Result<(),
     Ok(())
 }
 
-pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Path, output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+// glob("./**/*.rs").expect("Failed to read glob pattern")
+pub async fn generate_glob(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Path, output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let mut config_file = File::open(config_path).await.unwrap();
     let mut contents = String::new();
     config_file.read_to_string(&mut contents).await.unwrap();
@@ -246,11 +247,13 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Pa
     if let Some(obj) = config.as_object_mut() {
         obj.insert("rootFolder".to_string(), json!(output.to_str()));
     }
-    debug!("config:{config}");
+    // debug!("config:{config}");
     dereference_config(&mut config);
-    debug!("dereferenced config:{config}");
+    // debug!("dereferenced config:{config}");
 
     let  templates_path = generator_dir_path.join("templates");
+    debug!("templates_path_absolute: {:?}", path::absolute(templates_path.to_str().unwrap())?);
+
     for file in WalkDir::new(templates_path.clone()).into_iter().filter_map(|file| file.ok()) {
         if file.file_type().is_file() {
             let source = file.clone().into_path();
@@ -261,10 +264,45 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Pa
                 debug!("generating with template {} to {}", source.display(),destination.display());
                 // debug!("config:{}",config);
                 let source_content: String = fs::read_to_string(source.clone())?;
-                rrgen.generate(&*source_content, &config).unwrap();
+                rrgen.generate(templates_path.to_str(),&*source_content, &config).unwrap();
             }
             else {
-                debug!("copying file {} to {}", source.display(),destination.display());
+                // debug!("copying file {} to {}", source.display(),destination.display());
+                copy(source, destination).await.unwrap();
+            }
+        }
+    }
+    Ok(())
+}
+pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Path, output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config_file = File::open(config_path).await.unwrap();
+    let mut contents = String::new();
+    config_file.read_to_string(&mut contents).await.unwrap();
+    let mut config: Value = serde_json::from_str(&contents)?;
+    if let Some(obj) = config.as_object_mut() {
+        obj.insert("rootFolder".to_string(), json!(output.to_str()));
+    }
+    // debug!("config:{config}");
+    dereference_config(&mut config);
+    // debug!("dereferenced config:{config}");
+
+    let  templates_path = generator_dir_path.join("templates");
+    debug!("templates_path_absolute: {:?}", path::absolute(templates_path.to_str().unwrap())?);
+
+    for file in WalkDir::new(templates_path.clone()).into_iter().filter_map(|file| file.ok()) {
+        if file.file_type().is_file() {
+            let source = file.clone().into_path();
+            let stripped_path = file.path().strip_prefix(templates_path.clone());
+            let destination = output.clone().join(stripped_path.unwrap());
+            fs::create_dir_all(destination.parent().unwrap())?;
+            if file.file_name().to_str().unwrap().ends_with(".t") {
+                debug!("generating with template {} to {}", source.display(),destination.display());
+                // debug!("config:{}",config);
+                let source_content: String = fs::read_to_string(source.clone())?;
+                rrgen.generate(templates_path.to_str(),&*source_content, &config).unwrap();
+            }
+            else {
+                // debug!("copying file {} to {}", source.display(),destination.display());
                 copy(source, destination).await.unwrap();
             }
         }
@@ -273,13 +311,13 @@ pub async fn generate(rrgen:RRgen, generator_dir_path: PathBuf, config_path: &Pa
 }
 
 fn dereference_config(config: &mut Value) {
-    debug!("dereferencing config:{config}");
+    // debug!("dereferencing config:{config}");
     let entities = config.get_mut("entities").unwrap().as_array_mut().unwrap();
     entities.iter_mut().for_each(|mut elem| {
         let object = elem.as_object_mut().unwrap();
         if (object.contains_key("$ref") && object.get("$ref").unwrap().is_string() && object.len()==1) {
             let reference = object.get("$ref").unwrap().as_str().unwrap();
-            debug!("loading file from reference:{reference}");
+            // debug!("loading file from reference:{reference}");
             *elem = serde_json::from_reader(fs::File::open(reference).unwrap()).unwrap();
         }
     });
