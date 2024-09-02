@@ -26,3 +26,4 @@ tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 uuid = {version = "1.10.0",features = ["v4", "fast-rng", ] }
 semver = "1.0"
 walkdir = "2"
+anyhow = "1.0.86"
