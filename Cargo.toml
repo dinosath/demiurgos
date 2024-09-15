@@ -7,7 +7,7 @@ edition = "2021"
 dirs = "5.0"
 clap = { version = "4.5", features = ["derive"] }
 #rrgen = "0.5"
-rrgen = { path="../rrgen/rrgen" }
+rrgen = { git = "https://github.com/dinosath/rrgen.git" }
 clap_derive = "4.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
