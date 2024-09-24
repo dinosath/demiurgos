@@ -242,8 +242,9 @@ async fn move_to_repo_root(temp_dir: PathBuf, repo_root: &PathBuf) -> Result<(),
 
 pub(crate) fn dereference_config(config: &mut Value, parent_path: &Path) {
     // debug!("dereferencing config:{config}");
-    let entities = config.get_mut("entities").unwrap().as_array_mut().unwrap();
-    entities.iter_mut().for_each(|mut elem| {
+    let entities = config.get_mut("entities").unwrap().as_object_mut().unwrap();
+
+    entities.values_mut().into_iter().for_each(|mut elem| {
         let object = elem.as_object_mut().unwrap();
         if (object.contains_key("$ref") && object.get("$ref").unwrap().is_string() && object.len()==1) {
             let reference = object.get("$ref").unwrap().as_str().unwrap();

@@ -121,6 +121,7 @@ async fn main() -> Result<(), Error> {
                 },
                 None=>json!({})
             };
+            debug!("config: {:?}", ctx);
             if let Some(obj) = ctx.as_object_mut() {
                 obj.insert("outputFolder".to_string(), json!(output.to_str()));
             }
