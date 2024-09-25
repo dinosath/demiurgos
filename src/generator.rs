@@ -1,5 +1,4 @@
 use std::{fs, io, path};
-use std::error::Error;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use anyhow::anyhow;
@@ -16,7 +15,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, error, info};
 use tracing::field::debug;
 use tracing_subscriber::Layer;
-use walkdir::WalkDir;
 use zip::ZipArchive;
 use crate::path_to_json;
 
@@ -227,16 +225,17 @@ async fn move_to_repo_root(temp_dir: PathBuf, repo_root: &PathBuf) -> Result<(),
         create_dir_all(&generator_dir);
     }
 
-    for file in WalkDir::new(temp_dir.clone()).into_iter().filter_map(|file| file.ok()) {
-        if file.file_type().is_file() {
-            let source = file.clone().into_path();
-            let stripped_path = file.path().strip_prefix(temp_dir.clone());
-            let destination = generator_dir.clone().join(stripped_path.unwrap());
-            fs::create_dir_all(destination.parent().unwrap())?;
-            debug!("Copying file {} to {}", source.display(),destination.display());
-            copy(source, destination).await.unwrap();
-        }
-    }
+    // use glob for installing templates
+    // for file in WalkDir::new(temp_dir.clone()).into_iter().filter_map(|file| file.ok()) {
+    //     if file.file_type().is_file() {
+    //         let source = file.clone().into_path();
+    //         let stripped_path = file.path().strip_prefix(temp_dir.clone());
+    //         let destination = generator_dir.clone().join(stripped_path.unwrap());
+    //         fs::create_dir_all(destination.parent().unwrap())?;
+    //         debug!("Copying file {} to {}", source.display(),destination.display());
+    //         copy(source, destination).await.unwrap();
+    //     }
+    // }
     Ok(())
 }
 
@@ -244,9 +243,9 @@ pub(crate) fn dereference_config(config: &mut Value, parent_path: &Path) {
     // debug!("dereferencing config:{config}");
     let entities = config.get_mut("entities").unwrap().as_object_mut().unwrap();
 
-    entities.values_mut().into_iter().for_each(|mut elem| {
+    entities.values_mut().into_iter().for_each(|elem| {
         let object = elem.as_object_mut().unwrap();
-        if (object.contains_key("$ref") && object.get("$ref").unwrap().is_string() && object.len()==1) {
+        if object.contains_key("$ref") && object.get("$ref").unwrap().is_string() && object.len()==1 {
             let reference = object.get("$ref").unwrap().as_str().unwrap();
             debug!("loading file from reference:{reference}");
             let file_path = parent_path.join(reference);

@@ -17,7 +17,6 @@ use tokio::io::AsyncBufReadExt;
 use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format;
-use uuid::Uuid;
 use zip::ZipArchive;
 use crate::generator::{dereference_config, Generator};
 
@@ -207,8 +206,8 @@ fn create_new_template(name: &str) {
 }
 
 /// Helper function to create a file with content
-fn create_file(path: &str, content: &str) {
-    let mut file = File::create(path).unwrap();
+fn create_file(path: &str, _content: &str) {
+    // let file = File::create(path).unwrap();
     // file.write_all(content.as_bytes()).unwrap();
     println!("Created file: {}", path);
 }
