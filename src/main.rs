@@ -1,6 +1,5 @@
 mod generator;
 
-use generator::install_template;
 use std::fs;
 use std::fs::File;
 use std::io::copy;
@@ -18,7 +17,7 @@ use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::format;
 use zip::ZipArchive;
-use crate::generator::{dereference_config, Generator};
+use crate::generator::{dereference_config, install_template, Generator};
 
 /// A fictional versioning CLI
 #[derive(Parser, Debug)]
@@ -153,7 +152,11 @@ async fn main() -> Result<(), Error> {
             debug!("generator path: {}", path.display());
             let generate_glob_path = path.join("templates").join("**").join("*");
             debug!("generate_glob_path: {:?}", generate_glob_path);
-            rrgen.generate_glob(&generate_glob_path.to_str().unwrap(),&ctx).await?;
+            let generator = Generator::from_directory(path.as_path())?;
+            generator.copy_files(output)?;
+            generator.generate_templates(rrgen,output,&ctx)?;
+            println!("Loaded generator {}",generator.generator_yaml.name);
+            // rrgen.generate_glob(&generate_glob_path.to_str().unwrap(),&ctx).await?;
             Ok(())
         },
 

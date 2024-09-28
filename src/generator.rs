@@ -1,11 +1,12 @@
-use std::{fs, io, path};
+use crate::Url;
+use std::{fs, path::{Path, PathBuf}, io};
 use std::io::BufReader;
-use std::path::{Path, PathBuf};
 use anyhow::anyhow;
 use flate2::bufread::GzDecoder;
 use git2::Repository;
+use glob::glob;
 use reqwest::{get, Client};
-use rrgen::RRgen;
+use rrgen::{GenResult, RRgen};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tar::Archive;
@@ -17,88 +18,99 @@ use tracing::field::debug;
 use tracing_subscriber::Layer;
 use zip::ZipArchive;
 use crate::path_to_json;
+use serde::de::DeserializeOwned;
+use tracing_subscriber::fmt::format;
 
-#[derive(Serialize, Deserialize)]
-pub struct Generator {
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct Generator {
+    pub base_path: String,
+    pub generator_yaml: GeneratorYaml,
+    pub license: Option<String>,
+    pub readme: Option<String>,
+    pub values: serde_yaml::Value,
+    pub schema: Option<serde_json::Value>,
+    pub files: Option<Vec<String>>,
+    pub templates: Vec<String>,
+    pub dependencies: Option<Vec<Generator>>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct GeneratorYaml {
     #[serde(rename = "apiVersion")]
-    api_version: String,
+    pub api_version: String,
 
     #[serde(rename = "name")]
-    name: String,
+    pub name: String,
 
     #[serde(rename = "version")]
-    version: String,
+    pub version: String,
 
     #[serde(rename = "description")]
-    description: String,
+    pub description: Option<String>,
 
     #[serde(rename = "keywords")]
-    keywords: Vec<String>,
+    pub keywords: Option<Vec<String>>,
 
     #[serde(rename = "home")]
-    home: String,
+    pub home: Option<String>,
 
     #[serde(rename = "sources")]
-    sources: Vec<String>,
+    pub sources: Option<Vec<String>>,
 
     #[serde(rename = "dependencies")]
-    dependencies: Vec<Dependency>,
+    pub dependencies: Option<Vec<Dependency>>,
 
     #[serde(rename = "maintainers")]
-    maintainers: Vec<Maintainer>,
+    pub maintainers: Option<Vec<Maintainer>>,
 
     #[serde(rename = "icon")]
-    icon: String,
+    pub icon: Option<String>,
 
     #[serde(rename = "deprecated")]
-    deprecated: String,
+    pub deprecated: Option<bool>,
 
     #[serde(rename = "annotations")]
-    annotations: Annotations,
+    pub annotations: Option<Annotations>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Annotations {
     #[serde(rename = "example")]
-    example: String,
+    pub example: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Dependency {
     #[serde(rename = "name")]
-    name: String,
-
-    #[serde(rename = "version")]
-    version: String,
-
-    #[serde(rename = "repository")]
-    repository: String,
-
-    #[serde(rename = "condition")]
-    condition: String,
-
-    #[serde(rename = "tags")]
-    tags: Vec<String>,
-
-    #[serde(rename = "import-values")]
-    import_values: Vec<String>,
-
-    #[serde(rename = "alias")]
-    alias: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct Maintainer {
-    #[serde(rename = "name")]
-    name: String,
-
-    #[serde(rename = "email")]
-    email: String,
+    pub name: String,
 
     #[serde(rename = "url")]
-    url: String,
+    pub url: Url,
+
+    #[serde(rename = "condition")]
+    pub condition: Option<String>,
+
+    #[serde(rename = "tags")]
+    pub tags: Option<Vec<String>>,
+
+    #[serde(rename = "import-values")]
+    pub import_values: Option<Vec<String>>,
+
+    #[serde(rename = "alias")]
+    pub alias: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Maintainer {
+    #[serde(rename = "name")]
+    pub name: String,
+
+    #[serde(rename = "email")]
+    pub email: Option<String>,
+
+    #[serde(rename = "url")]
+    pub url: Option<String>,
+}
 
 pub async fn install_template(uri: &String, destination: &PathBuf) {
     let source = uri;
@@ -107,6 +119,202 @@ pub async fn install_template(uri: &String, destination: &PathBuf) {
     let generator_dir = prepare_generator_source(uri).await.unwrap();
     debug!("generator_dir:{}", generator_dir.display());
     move_to_repo_root(generator_dir, destination).await.unwrap();
+}
+
+impl Generator {
+    pub fn from_directory(base_path: &Path) -> Result<Self, io::Error> {
+        let generator_yaml: GeneratorYaml = read_yaml_file(base_path, "Generator.yaml")?;
+        let license = read_optional_file_as_string(base_path, "LICENSE");
+        let readme = read_optional_file_as_string(base_path, "README.md");
+        let values: serde_yaml::Value = read_yaml_file(base_path, "values.yaml")?;
+        let schema = read_optional_json_file(base_path, "schema.json");
+        let files = read_optional_directory(base_path, "files");
+        let templates = read_required_directory(base_path, "templates")?;
+        let dependencies = read_optional_dependencies(base_path, "dependencies");
+
+        debug!("files {:?}", files);
+        Ok(Generator {
+            base_path: base_path.to_str().unwrap().to_owned(),
+            generator_yaml,
+            license,
+            readme,
+            values,
+            schema,
+            files,
+            templates,
+            dependencies,
+        })
+    }
+
+    pub fn copy_files(&self, destination_dir: &PathBuf) -> Result<(), io::Error> {
+        if self.files.is_none() {
+            debug!("There are no files to copy");
+            return Ok(());
+        }
+        if !destination_dir.exists() {
+            fs::create_dir_all(destination_dir)?;
+            debug!("Copying files to destination {:?}", destination_dir);
+        }
+        if !destination_dir.is_dir() {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Destination directory is not a directory"));
+        }
+        debug!("Copying files to destination {:?}", destination_dir);
+
+        let base_path = Path::new(&self.base_path).join("files");
+        self.files.clone().unwrap().iter().for_each(|file| {
+            let file_path = Path::new(file);
+            let destination = construct_destination_path(&base_path, &file_path, destination_dir).unwrap();
+            fs::create_dir_all(destination.clone().parent().unwrap()).unwrap();
+            fs::copy(&file_path, &destination).unwrap();
+        });
+
+        Ok(())
+    }
+
+    pub fn generate_templates(&self, mut rrgen: RRgen, destination_dir: &PathBuf, values: &Value) -> Result<(), io::Error> {
+        if self.templates.is_empty() {
+            debug!("There are no templates to generate");
+            return Ok(());
+        }
+        if !destination_dir.exists() {
+            fs::create_dir_all(destination_dir)?;
+        }
+        if !destination_dir.is_dir() {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Destination directory is not a directory"));
+        }
+        debug!("Generating templates {:?}",self.templates);
+        debug!("base_path {:?}",self.base_path);
+        rrgen.add_dir_to_tera(Path::new(&self.base_path).join("templates"));
+
+        let mut templates = self.templates.clone();
+        templates.sort();
+        templates.iter()
+            .map(|template| Path::new(template))
+            .filter(|template| template.is_file() && !(template.file_name().unwrap().to_str().unwrap().starts_with("_") && template.extension().unwrap().to_str().unwrap().eq("tpl")))
+            .for_each(|file_path| {
+                let file_name = file_path.file_name().unwrap().to_str().unwrap();
+
+                let content = fs::read_to_string(file_path).unwrap();
+                debug!("generating file_path:{:?}, file_name:{:?}, content:{:?}",file_path, file_name, content);
+                rrgen.generate(content.as_str(), values).unwrap();
+            });
+
+        Ok(())
+    }
+
+
+    fn read_dir_to_vec(dir_path: impl AsRef<Path>) -> Result<Vec<String>, io::Error> {
+        let mut file_names = Vec::new();
+        if dir_path.as_ref().exists() {
+            for entry in fs::read_dir(dir_path)? {
+                let entry = entry?;
+                if entry.file_type()?.is_file() {
+                    if let Some(file_name) = entry.file_name().to_str() {
+                        file_names.push(file_name.to_string());
+                    }
+                }
+            }
+        }
+        Ok(file_names)
+    }
+}
+
+fn construct_destination_path(base_path: &Path, file: &Path, destination_dir: &Path) -> Result<PathBuf, io::Error> {
+    let base_path = base_path.canonicalize().map_err(|e| {
+        eprintln!("Error canonicalizing base_path: {:?}", e);
+        e
+    })?;
+
+    let file = file.canonicalize().map_err(|e| {
+        eprintln!("Error canonicalizing file: {:?}", e);
+        e
+    })?;
+
+    let destination_file_path = file.strip_prefix(&base_path).map_err(|e| {
+        eprintln!("Error stripping prefix from file: {:?}", e);
+        io::Error::new(io::ErrorKind::Other, "Strip prefix failed")
+    })?;
+    let destination = destination_dir.join(destination_file_path);
+    Ok(destination)
+}
+
+fn read_yaml_file<T: for<'de> Deserialize<'de>>(base_path: &Path, file_name: &str) -> Result<T, io::Error> {
+    let file_path = base_path.join(file_name);
+    let content = fs::read_to_string(file_path.clone())
+        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, format!("Error reading file {:?} due to the following error:{:?}:", file_path, e)))?;
+
+    let data: T = serde_yaml::from_str(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Cannot deserialize file {:?} due to error:{:?}", file_path, e)))?;
+    Ok(data)
+}
+
+fn read_optional_file_as_string(base_path: &Path, file_name: &str) -> Option<String> {
+    fs::read_to_string(base_path.join(file_name)).ok()
+}
+
+fn read_optional_json_file(base_path: &Path, file_name: &str) -> Option<serde_json::Value> {
+    let content = fs::read_to_string(base_path.join(file_name)).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn read_optional_directory(base_path: &Path, dir_name: &str) -> Option<Vec<String>> {
+    let dir_path = base_path.join(dir_name);
+    if !dir_path.exists() || !dir_path.is_dir() {
+        return None;
+    }
+
+    let glob_pattern = base_path.join(dir_name).join("**/*");
+
+    let files: Vec<String> = glob(glob_pattern.to_str().unwrap())
+        .unwrap()
+        .filter_map(|x| {
+            match x {
+                Ok(path) if path.is_file() => {
+                    path.to_str().map(|s| s.to_string())
+                }
+                Ok(_) => None,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    None
+                }
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<String>>();
+
+    if files.is_empty() {
+        None
+    } else {
+        Some(files)
+    }
+}
+
+fn read_required_directory(base_path: &Path, dir_name: &str) -> Result<Vec<String>, io::Error> {
+    let dir_path = base_path.join(dir_name);
+    if !dir_path.exists() || !dir_path.is_dir() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, format!("Directory {} not found", dir_name)));
+    }
+    let files = fs::read_dir(dir_path)?
+        .filter_map(|entry| entry.ok().map(|e| e.path().display().to_string()))
+        .collect();
+    Ok(files)
+}
+
+fn read_optional_dependencies(base_path: &Path, dir_name: &str) -> Option<Vec<Generator>> {
+    let dependencies_dir = base_path.join(dir_name);
+    if !dependencies_dir.exists() || !dependencies_dir.is_dir() {
+        return None;
+    }
+    let dependencies = fs::read_dir(dependencies_dir)
+        .ok()?
+        .filter_map(|entry| {
+            entry.ok().and_then(|e| {
+                let path = e.path();
+                Generator::from_directory(&path).ok()
+            })
+        })
+        .collect();
+    Some(dependencies)
 }
 
 async fn validate_generator(generator_dir_path: PathBuf) {
@@ -144,13 +352,12 @@ async fn prepare_generator_source(uri: &str) -> Result<PathBuf, Box<dyn std::err
 
 /// Downloads and extracts an archive (ZIP or TAR.GZ) from a URL.
 async fn download_and_extract(uri: &str, extract_to: &Path) -> Result<(), Box<dyn std::error::Error>> {
-
-    let response= reqwest::get(uri).await?;
+    let response = reqwest::get(uri).await?;
 
     let file_path = extract_to.join("download.zip");
 
     let mut file = File::create(&file_path).await.unwrap();
-    let content =  response.text().await.unwrap();
+    let content = response.text().await.unwrap();
     file.write_all(content.as_bytes());
     let file = fs::File::open(file_path).unwrap();
 
@@ -215,7 +422,7 @@ async fn move_to_repo_root(temp_dir: PathBuf, repo_root: &PathBuf) -> Result<(),
     file.read_to_string(&mut contents).await?;
 
     // Deserialize from the string contents
-    let generator: Generator = serde_yaml::from_str(&contents)
+    let generator: GeneratorYaml = serde_yaml::from_str(&contents)
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to deserialize Generator.yaml"))?;
 
     let generator_dir = Path::new(repo_root).join(generator.name.clone()).join(generator.version.clone());
@@ -245,16 +452,15 @@ pub(crate) fn dereference_config(config: &mut Value, parent_path: &Path) {
 
     entities.values_mut().into_iter().for_each(|elem| {
         let object = elem.as_object_mut().unwrap();
-        if object.contains_key("$ref") && object.get("$ref").unwrap().is_string() && object.len()==1 {
+        if object.contains_key("$ref") && object.get("$ref").unwrap().is_string() && object.len() == 1 {
             let reference = object.get("$ref").unwrap().as_str().unwrap();
             debug!("loading file from reference:{reference}");
             let file_path = parent_path.join(reference);
             if file_path.exists() {
                 *elem = path_to_json(&file_path).expect(format!("file {} doesnt exist or is an invalid JSON", file_path.display()).as_str());
-            }else {
+            } else {
                 error!("File {} does not exist",file_path.display());
             }
-
         }
     });
 }

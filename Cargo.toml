@@ -10,24 +10,26 @@ panic = "abort"
 strip = "symbols"
 
 [dependencies]
-dirs = "5.0"
+anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
-#rrgen = "0.5"
-#rrgen = { git = "https://github.com/dinosath/rrgen.git" }
-rrgen = { path = "../rrgen/rrgen" }
 clap_derive = "4.5"
+dirs = "5.0"
+git2 = "0.14"
+flate2 = "1.0"
+glob = "0.3.1"
+jsonschema = "0.20"
+rrgen = { git = "https://github.com/dinosath/rrgen.git" }
+reqwest = { version = "0.12", features = ["json", "gzip", "deflate", "stream"] }
+semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-reqwest = { version = "0.12", features = ["json", "gzip", "deflate", "stream"] }
-tokio = { version = "1", features = ["full"] }
-zip = "0.6"
-git2 = "0.14"
-flate2 = "1.0"
 tar = "0.4"
 tempfile = "3.2"
-tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
-uuid = {version = "1.10.0",features = ["v4", "fast-rng", ] }
-semver = "1.0"
-anyhow = "1.0.86"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = { version = "2", features = ["serde"] }
+uuid = {version = "1.10",features = ["v4", "fast-rng", ] }
+zip = "0.6"
+log = "0.4.22"
