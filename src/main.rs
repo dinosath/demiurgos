@@ -154,7 +154,7 @@ async fn main() -> Result<(), Error> {
             debug!("generate_glob_path: {:?}", generate_glob_path);
             let generator = Generator::from_directory(path.as_path())?;
             generator.copy_files(output)?;
-            generator.generate_templates(rrgen,output,&ctx)?;
+            generator.generate_templates(&mut rrgen,output,&ctx)?;
             println!("Loaded generator {}",generator.generator_yaml.name);
             // rrgen.generate_glob(&generate_glob_path.to_str().unwrap(),&ctx).await?;
             Ok(())

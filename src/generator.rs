@@ -130,9 +130,9 @@ impl Generator {
         let schema = read_optional_json_file(base_path, "schema.json");
         let files = read_optional_directory(base_path, "files");
         let templates = read_required_directory(base_path, "templates")?;
+        //TODO load dependencies from generator_yaml and not directory
         let dependencies = read_optional_dependencies(base_path, "dependencies");
 
-        debug!("files {:?}", files);
         Ok(Generator {
             base_path: base_path.to_str().unwrap().to_owned(),
             generator_yaml,
@@ -171,7 +171,15 @@ impl Generator {
         Ok(())
     }
 
-    pub fn generate_templates(&self, mut rrgen: RRgen, destination_dir: &PathBuf, values: &Value) -> Result<(), io::Error> {
+    pub fn generate_templates(&self, rrgen: &mut RRgen, destination_dir: &PathBuf, values: &Value) -> Result<(), io::Error> {
+        if let Some(dependencies) = &self.dependencies {
+            for dependency in dependencies {
+                debug!("Generating templates for dependency: {:?}", dependency.generator_yaml.name);
+                dependency.generate_templates(rrgen, destination_dir, values)?;
+            }
+        }
+
+
         if self.templates.is_empty() {
             debug!("There are no templates to generate");
             return Ok(());
@@ -195,7 +203,7 @@ impl Generator {
                 let file_name = file_path.file_name().unwrap().to_str().unwrap();
 
                 let content = fs::read_to_string(file_path).unwrap();
-                debug!("generating file_path:{:?}, file_name:{:?}, content:{:?}",file_path, file_name, content);
+                debug!("generating file_path:{:?}, file_name:{:?}",file_path, file_name);
                 rrgen.generate(content.as_str(), values).unwrap();
             });
 
