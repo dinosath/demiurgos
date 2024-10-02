@@ -1,11 +1,12 @@
 use crate::Url;
 use std::{fs, path::{Path, PathBuf}, io};
-use std::io::BufReader;
+use std::io::{BufReader, Cursor, ErrorKind};
 use anyhow::anyhow;
 use flate2::bufread::GzDecoder;
+use futures::stream;
 use git2::Repository;
 use glob::glob;
-use reqwest::{get, Client};
+use reqwest::{get, Client, Response};
 use rrgen::{GenResult, RRgen};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -20,6 +21,9 @@ use zip::ZipArchive;
 use crate::path_to_json;
 use serde::de::DeserializeOwned;
 use tracing_subscriber::fmt::format;
+use tokio_stream::wrappers::ReadDirStream;
+use json_value_merge::Merge;
+use tokio_stream::StreamExt;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Generator {
@@ -122,7 +126,26 @@ pub async fn install_template(uri: &String, destination: &PathBuf) {
 }
 
 impl Generator {
-    pub fn from_directory(base_path: &Path) -> Result<Self, io::Error> {
+    pub async fn from_url(url: &Url) -> Result<Self, io::Error> {
+        // Determine if the URL is a file:// or http:// URL
+        let url_path = if url.scheme() == "file" {
+            // Convert file:// URLs to a filesystem path
+            url.to_file_path().map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid file URL {:?}",url)))?
+        } else if url.scheme() == "http" || url.scheme() == "https" {
+            // For http:// or https:// URLs, handle download and return a path to the downloaded file
+            let temp_path = download_and_extract_to_temp(url.clone()).await?;
+            temp_path
+        } else {
+            // Unsupported scheme
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Unsupported URL scheme"));
+        };
+
+        // Process the resolved path by calling from_directory (assuming this method exists)
+        Self::from_directory(&url_path).await
+    }
+
+
+    pub async fn from_directory(base_path: &Path) -> Result<Self, io::Error> {
         let generator_yaml: GeneratorYaml = read_yaml_file(base_path, "Generator.yaml")?;
         let license = read_optional_file_as_string(base_path, "LICENSE");
         let readme = read_optional_file_as_string(base_path, "README.md");
@@ -130,8 +153,16 @@ impl Generator {
         let schema = read_optional_json_file(base_path, "schema.json");
         let files = read_optional_directory(base_path, "files");
         let templates = read_required_directory(base_path, "templates")?;
-        //TODO load dependencies from generator_yaml and not directory
-        let dependencies = read_optional_dependencies(base_path, "dependencies");
+        let dependencies:Vec<Generator> = match &generator_yaml.dependencies {
+            None => {vec![]}
+            Some(dependencies) => {
+                futures::future::join_all(
+                    dependencies.iter().map(|dependency| async {
+                        Generator::from_url(&dependency.url).await.unwrap()
+                    })
+                ).await
+            }
+        };
 
         Ok(Generator {
             base_path: base_path.to_str().unwrap().to_owned(),
@@ -142,7 +173,7 @@ impl Generator {
             schema,
             files,
             templates,
-            dependencies,
+            dependencies: Some(dependencies),
         })
     }
 
@@ -194,6 +225,19 @@ impl Generator {
         debug!("base_path {:?}",self.base_path);
         rrgen.add_dir_to_tera(Path::new(&self.base_path).join("templates"));
 
+        // TODO enable it when entities are loaded separately from values
+        // debug!("values:{:?}",values);
+        // let mut generator_values = self.values.clone();
+        // let mut generator_values_json = serde_json::to_value(generator_values).unwrap();
+        // debug!("generator_values_json:{:?}",generator_values);
+        //
+        // if values.is_object() && values.as_object().unwrap().contains_key(self.generator_yaml.name.as_str()) {
+        //     let values_json = serde_json::to_value(values.clone().as_object().unwrap().get(self.generator_yaml.name.as_str())).unwrap();
+        //     debug!("values_json:{:?}",values_json);
+        //     generator_values_json.merge(&values_json);
+        // }
+        // debug!("generator_values_json after merge:{:?}",generator_values_json);
+
         let mut templates = self.templates.clone();
         templates.sort();
         templates.iter()
@@ -205,6 +249,8 @@ impl Generator {
                 let content = fs::read_to_string(file_path).unwrap();
                 debug!("generating file_path:{:?}, file_name:{:?}",file_path, file_name);
                 rrgen.generate(content.as_str(), values).unwrap();
+                // TODO change it when entities are loaded separately from values
+                // rrgen.generate(content.as_str(), &generator_values_json).unwrap();
             });
 
         Ok(())
@@ -226,6 +272,29 @@ impl Generator {
         Ok(file_names)
     }
 }
+
+/// Downloads and extracts an archive (ZIP or TAR.GZ) from a URL.
+async fn download_and_extract_to_temp(url: Url) -> Result<PathBuf, io::Error> {
+    let temp_dir = tempdir().unwrap().into_path();
+    debug!("Downloading to {:?} to {:?}", url,temp_dir);
+
+    let response = reqwest::get(url.clone()).await.map_err(|e| io::Error::new(ErrorKind::Other, format!("Failed to download file {} due to error: {}", url.to_string(), e)))?;
+
+    if !response.status().is_success() {
+        return Err(io::Error::new(ErrorKind::Other, format!("Failed to download file from {}. Status code: {}", url, response.status())));
+    }
+
+    let bytes = response.bytes().await.map_err(|e| io::Error::new(ErrorKind::Other, format!("Failed to read response bytes of file downloaded from url {} due to error: {}", url.to_string(), e)))?;
+
+    let cursor = Cursor::new(bytes);
+    if url.to_string().ends_with(".zip") || url.to_string().ends_with(".tar.gz") {
+        let mut zip = ZipArchive::new(cursor)?;
+        zip.extract(&temp_dir)?;
+    }
+
+    Ok(temp_dir)
+}
+
 
 fn construct_destination_path(base_path: &Path, file: &Path, destination_dir: &Path) -> Result<PathBuf, io::Error> {
     let base_path = base_path.canonicalize().map_err(|e| {
@@ -306,23 +375,6 @@ fn read_required_directory(base_path: &Path, dir_name: &str) -> Result<Vec<Strin
         .filter_map(|entry| entry.ok().map(|e| e.path().display().to_string()))
         .collect();
     Ok(files)
-}
-
-fn read_optional_dependencies(base_path: &Path, dir_name: &str) -> Option<Vec<Generator>> {
-    let dependencies_dir = base_path.join(dir_name);
-    if !dependencies_dir.exists() || !dependencies_dir.is_dir() {
-        return None;
-    }
-    let dependencies = fs::read_dir(dependencies_dir)
-        .ok()?
-        .filter_map(|entry| {
-            entry.ok().and_then(|e| {
-                let path = e.path();
-                Generator::from_directory(&path).ok()
-            })
-        })
-        .collect();
-    Some(dependencies)
 }
 
 async fn validate_generator(generator_dir_path: PathBuf) {
